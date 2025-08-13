@@ -12,13 +12,13 @@ using namespace Lumix;
 
 struct EditorPlugin : StudioApp::GUIPlugin
 {
-	EditorPlugin(StudioApp& app)
+	EditorPlugin(StudioApp& app, WorldEditor& editor)
 		: m_app(app)
 		, is_opened(false)
 		, frameCount(500)
 		, selected_keyframe(nullptr)
 		, dragging_keyframe(nullptr)
-		, splitter_ratio(0.3f) 
+		, splitter_ratio(0.3f)
 		, splitter_active(false)
 		, currentFrame(0)
 		, selected_track(nullptr)
@@ -26,14 +26,13 @@ struct EditorPlugin : StudioApp::GUIPlugin
 		, play_speed(24)
 		, time_accumulator(0.0f)
 		, is_scrubbing(false)
-		, timeline_offset(0.0f) 
+		, timeline_offset(0.0f)
 		, dragging_timeline(false)
 		, hovering_keyframe(false)
-
+		, editor(editor)
+		, tracks{Track{"Object 1_Rotation", 1, {{10, Vec3(1, 2, 3)}, {20, Vec3(4, 5, 6)}}, Track::ValueType::Vec3},
+			  Track{"Object 1_Transform", 1, {{10, Quat(1, 0, 0, 0)}, {20, Quat(0, 1, 0, 0)}}, Track::ValueType::Quat}}
 	{
-
-		tracks = {{"Object 1_Rotation",1, {{10, Vec3(1, 2, 3)}, {20, Vec3(4, 5, 6)}}, Track::ValueType::Vec3},
-			{"Object 1_Transform", 1, {{10, Quat(1, 0, 0, 0)}, {20, Quat(0, 1, 0, 0)}}, Track::ValueType::Quat}};
 	}
 
 	StudioApp& m_app;
@@ -82,6 +81,9 @@ struct EditorPlugin : StudioApp::GUIPlugin
 	float splitter_ratio;
 	bool splitter_active;
 
+
+	WorldEditor& editor;
+
 	// UI színek és méretek
 	static constexpr float TRACK_HEIGHT = 40.0f;		   
 	static constexpr float KEYFRAME_RADIUS = 6.0f;		   
@@ -90,8 +92,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 
 	void onGUI() override
 	{
-		WorldEditor& editor = m_app.getWorldEditor();
-		const Array<EntityRef>& ents = editor.getSelectedEntities();
+		
+         Span<const EntityRef> ents = editor.getSelectedEntities();
 		World& world = *editor.getWorld();
 
 		if (playing)
@@ -123,7 +125,7 @@ struct EditorPlugin : StudioApp::GUIPlugin
 		}
 
 		const char* entity_name = "No entity selected";
-		if (!ents.empty())
+		if (!ents.end() == 0)
 		{
 			entity_name = world.getEntityName(ents[0]);
 		}
@@ -635,7 +637,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 LUMIX_STUDIO_ENTRY(proproperty)
 {
 	WorldEditor& editor = app.getWorldEditor();
-	auto* plugin = LUMIX_NEW(editor.getAllocator(), EditorPlugin)(app);
+
+	auto* plugin = LUMIX_NEW(editor.getAllocator(), EditorPlugin)(app, editor);
 	app.addPlugin(*plugin);
 	return nullptr;
 }

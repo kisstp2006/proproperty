@@ -1,5 +1,4 @@
-project "proproperty"
-	libType()
+if plugin "proproperty" then
 	files { 
 		"src/**.c",
 		"src/**.cpp",
@@ -7,7 +6,9 @@ project "proproperty"
 		"genie.lua"
 	}
 	defines { "BUILDING_PROPROPERTY" }
-	links { "engine" }
-	defaultConfigurations()
+	dynamic_link_plugin { "engine", "core" }
+	if build_studio then
+		dynamic_link_plugin { "editor" }
+	end
 
-linkPlugin("proproperty")
+end
