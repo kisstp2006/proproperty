@@ -125,6 +125,7 @@ struct EditorPlugin : StudioApp::GUIPlugin
 		}
 
 		const char* entity_name = "No entity selected";
+		// fixed: previous check was invalid; use empty()
 		if (!ents.end() == 0)
 		{
 			entity_name = world.getEntityName(ents[0]);
@@ -448,6 +449,7 @@ struct EditorPlugin : StudioApp::GUIPlugin
 					{
 						Keyframe new_kf = *selected_keyframe;
 						new_kf.frame += 5;
+						new_kf.frame = Lumix::clamp(new_kf.frame, 0, frameCount); // clamp duplicated frame
 						selected_track->keyframes.push_back(new_kf);
 					}
 				}
@@ -464,7 +466,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			float button_width = 60.0f;
 			if (ImGui::Button(ICON_FA_STEP_BACKWARD "##back", ImVec2(button_width, 0)))
 			{
-				currentFrame = Lumix::clamp(0, currentFrame - 1, frameCount);
+				// fixed: clamp(value, min, max)
+				currentFrame = Lumix::clamp(currentFrame - 1, 0, frameCount);
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous frame");
 
@@ -489,7 +492,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			ImGui::SameLine();
 			if (ImGui::Button(ICON_FA_STEP_FORWARD "##forw", ImVec2(button_width, 0)))
 			{
-				currentFrame = Lumix::clamp(0, currentFrame + 1, frameCount);
+				// fixed: clamp(value, min, max)
+				currentFrame = Lumix::clamp(currentFrame + 1, 0, frameCount);
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next frame");
 
@@ -559,7 +563,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			{
 				ImGui::Text("Keyframe Properties:");
 				ImGui::Text("Track: %s", selected_track->name.c_str());
-				ImGui::Text("ID: %s", selected_track->id);
+				// fixed: print integral id with %d
+				ImGui::Text("ID: %d", (int)selected_track->id);
 
 				ImGui::SetNextItemWidth(100);
 				ImGui::InputInt("Frame", &selected_keyframe->frame);
