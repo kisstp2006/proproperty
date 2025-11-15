@@ -780,7 +780,7 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			play_speed = Lumix::clamp(play_speed, 1, 120);
 
 			// If recording, sample current transforms for selected entities and add keyframes
-			if (recording && ents.length() > 0)
+			if (recording && !is_scrubbing && ents.length() > 0)
 			{
 				for (EntityRef e : ents)
 				{
