@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 using namespace Lumix;
 
@@ -137,11 +138,197 @@ struct EditorPlugin : StudioApp::GUIPlugin
 		}
 	}
 
+	// compare variant values with tolerance for floats/vectors
+	static bool variantValuesEqual(const std::variant<float, int, Vec2, Vec3, Quat>& a,
+								   const std::variant<float, int, Vec2, Vec3, Quat>& b)
+	{
+		constexpr float EPS = 1e-5f;
+		if (a.index() != b.index()) return false;
+
+		// index mapping: 0=float, 1=int, 2=Vec2, 3=Vec3, 4=Quat
+		switch (a.index()) {
+			case 0: {
+				float av = std::get<float>(a);
+				float bv = std::get<float>(b);
+				return fabsf(av - bv) <= EPS;
+			}
+			case 1: {
+				int av = std::get<int>(a);
+				int bv = std::get<int>(b);
+				return av == bv;
+			}
+			case 2: {
+				Vec2 av = std::get<Vec2>(a);
+				Vec2 bv = std::get<Vec2>(b);
+				return fabsf(av.x - bv.x) <= EPS && fabsf(av.y - bv.y) <= EPS;
+			}
+			case 3: {
+				Vec3 av = std::get<Vec3>(a);
+				Vec3 bv = std::get<Vec3>(b);
+				return fabsf(av.x - bv.x) <= EPS && fabsf(av.y - bv.y) <= EPS && fabsf(av.z - bv.z) <= EPS;
+			}
+			case 4: {
+				Quat av = std::get<Quat>(a);
+				Quat bv = std::get<Quat>(b);
+				return fabsf(av.x - bv.x) <= EPS && fabsf(av.y - bv.y) <= EPS && fabsf(av.z - bv.z) <= EPS && fabsf(av.w - bv.w) <= EPS;
+			}
+			default:
+				return false;
+		}
+	}
+
+	// decide whether to add a keyframe: skip if last recorded value equals current
+	bool shouldAddKeyframe(const Track& track, int frame, const std::variant<float, int, Vec2, Vec3, Quat>& value) const
+	{
+		if (track.keyframes.empty()) return true;
+		// tracks are kept sorted by frame in addOrReplaceKeyframe
+		const Keyframe& last = track.keyframes.back();
+		// if there is already a keyframe at this frame and its value is identical, skip
+		if (last.frame == frame) {
+			if (variantValuesEqual(last.value, value)) return false;
+			return true; // different value -> replace
+		}
+		// if last recorded value equals current sampled value, no need to add a new keyframe
+		if (variantValuesEqual(last.value, value)) return false;
+		return true;
+	}
+
+	// Add this helper function to interpolate keyframe values
+	static std::variant<float, int, Vec2, Vec3, Quat> interpolateKeyframeValue(
+		const std::vector<EditorPlugin::Keyframe>& keyframes,
+		int frame,
+		EditorPlugin::Track::ValueType type)
+	{
+		if (keyframes.empty()) {
+			switch (type) {
+				case EditorPlugin::Track::ValueType::Float: return 0.0f;
+				case EditorPlugin::Track::ValueType::Int: return 0;
+				case EditorPlugin::Track::ValueType::Vec2: return Vec2(0, 0);
+				case EditorPlugin::Track::ValueType::Vec3: return Vec3(0, 0, 0);
+				case EditorPlugin::Track::ValueType::Quat: return Quat(0, 0, 0, 1);
+			}
+		}
+
+		// Find the two keyframes surrounding the current frame
+		const EditorPlugin::Keyframe* kf_before = nullptr;
+		const EditorPlugin::Keyframe* kf_after = nullptr;
+
+		for (const auto& kf : keyframes) {
+			if (kf.frame <= frame) kf_before = &kf;
+			if (kf.frame >= frame && kf_after == nullptr) kf_after = &kf;
+		}
+
+		// If we're before the first keyframe, return it
+		if (!kf_before) return keyframes.front().value;
+		// If we're after the last keyframe, return it
+		if (!kf_after) return keyframes.back().value;
+		// If we're exactly on a keyframe, return it
+		if (kf_before->frame == frame) return kf_before->value;
+
+		// Linear interpolation between keyframes
+		const float t = static_cast<float>(frame - kf_before->frame) / (kf_after->frame - kf_before->frame);
+
+		return std::visit([t, kf_after](const auto& before_val) -> std::variant<float, int, Vec2, Vec3, Quat> {
+			using T = std::decay_t<decltype(before_val)>;
+			const auto& after_val = std::get<T>(kf_after->value);
+
+			if constexpr (std::is_same_v<T, float>) {
+				return before_val + (after_val - before_val) * t;
+			}
+			else if constexpr (std::is_same_v<T, int>) {
+				return before_val; // No interpolation for integers
+			}
+			else if constexpr (std::is_same_v<T, Vec2>) {
+				return before_val + (after_val - before_val) * t;
+			}
+			else if constexpr (std::is_same_v<T, Vec3>) {
+				return before_val + (after_val - before_val) * t;
+			}
+			else if constexpr (std::is_same_v<T, Quat>) {
+				// Implement SLERP manually since Quat::slerp does not exist
+				// Assumes Quat is a struct with x, y, z, w as floats
+				const float EPSILON = 1e-6f;
+				float dot = before_val.x * after_val.x + before_val.y * after_val.y + before_val.z * after_val.z + before_val.w * after_val.w;
+				Quat end = after_val;
+				if (dot < 0.0f) {
+					dot = -dot;
+					end.x = -end.x;
+					end.y = -end.y;
+					end.z = -end.z;
+					end.w = -end.w;
+				}
+				float scale0, scale1;
+				if (1.0f - dot > EPSILON) {
+					float omega = acosf(dot);
+					float sin_omega = sinf(omega);
+					scale0 = sinf((1.0f - t) * omega) / sin_omega;
+					scale1 = sinf(t * omega) / sin_omega;
+				} else {
+					// Linear interpolation for very close quaternions
+					scale0 = 1.0f - t;
+					scale1 = t;
+				}
+				return Quat{
+					before_val.x * scale0 + end.x * scale1,
+					before_val.y * scale0 + end.y * scale1,
+					before_val.z * scale0 + end.z * scale1,
+					before_val.w * scale0 + end.w * scale1
+				};
+			}
+			else {
+				return before_val;
+			}
+		}, kf_before->value);
+	}
+
+	// Add this method to EditorPlugin to apply animation to selected entities
+	void applyAnimationFrame(int frame, World& world)
+	{
+		// For each track, find the entity and apply the keyframe value
+		for (const Track& track : tracks) {
+			// Find the entity by ID
+			EntityPtr entity = INVALID_ENTITY;
+			for (EntityPtr e = world.getFirstEntity(); e.isValid(); e = world.getNextEntity(*e)) {
+				if (world.hasEntity(*e) && ((EntityRef)*e).index == track.id) {
+					entity = e;
+					break;
+				}
+			}
+
+			if (!entity.isValid()) continue;
+			EntityRef entity_ref = (EntityRef)*entity;
+
+			// Interpolate and apply the value at the current frame
+			if (!track.keyframes.empty()) {
+				auto value = interpolateKeyframeValue(track.keyframes, frame, track.type);
+
+				std::visit([&](const auto& val) {
+					using T = std::decay_t<decltype(val)>;
+					if constexpr (std::is_same_v<T, Vec3>) {
+						// Position track
+						if (track.name.find("Position") != std::string::npos) {
+							world.setPosition(entity_ref, DVec3(val.x, val.y, val.z));
+						}
+					}
+					else if constexpr (std::is_same_v<T, Quat>) {
+						// Rotation track
+						if (track.name.find("Rotation") != std::string::npos) {
+							world.setRotation(entity_ref, val);
+						}
+					}
+				}, value);
+			}
+		}
+	}
+
 	void onGUI() override
 	{
 		
          Span<const EntityRef> ents = editor.getSelectedEntities();
 		World& world = *editor.getWorld();
+
+		// Declare timeline_start_x at function scope so it's accessible throughout
+		float timeline_start_x = 0.0f;
 
 		if (playing)
 		{
@@ -156,6 +343,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 				currentFrame = frameCount;
 				playing = false;
 			}
+			// Apply animation at current frame
+			applyAnimationFrame(currentFrame, world);
 		}
 
 		if (ImGui::IsWindowFocused())
@@ -197,7 +386,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
 			ImVec2 canvas_size = ImGui::GetContentRegionAvail();
 
-			float timeline_start_x = canvas_pos.x + TRACK_LABELS_WIDTH;
+			// Assign timeline_start_x here where it was originally declared
+			timeline_start_x = canvas_pos.x + TRACK_LABELS_WIDTH;
 			float base_frame_width = 8.0f;
 			float frame_width = base_frame_width * zoom;
 
@@ -307,7 +497,7 @@ struct EditorPlugin : StudioApp::GUIPlugin
 					
 					if (frame_spacing * frame_width > 30.0f)
 					{
-						char buf[16];
+					 char buf[16];
 						sprintf_s(buf, "%d", f);
 						ImVec2 text_size = ImGui::CalcTextSize(buf);
 						ImVec2 text_pos = ImVec2(x - text_size.x * 0.5f, canvas_pos.y + 8);
@@ -354,8 +544,12 @@ struct EditorPlugin : StudioApp::GUIPlugin
 				playing = false;
 				ImVec2 mouse_pos = ImGui::GetMousePos();
 				float relative_mouse_x = mouse_pos.x - timeline_start_x - timeline_offset;
+				frame_width = base_frame_width * zoom;
 				int new_frame = int(relative_mouse_x / frame_width + 0.5f);
 				currentFrame = Lumix::clamp(new_frame, 0, frameCount);
+
+				// Preview animation while scrubbing
+				applyAnimationFrame(currentFrame, world);
 
 				if (!ImGui::IsMouseDown(0))
 				{
@@ -594,12 +788,18 @@ struct EditorPlugin : StudioApp::GUIPlugin
 					Track* pos_track = findOrCreateEntityTrack(e, Track::ValueType::Vec3, "Position", world);
 					DVec3 pos_d = world.getPosition(e);
 					Vec3 pos = Vec3((float)pos_d.x, (float)pos_d.y, (float)pos_d.z);
-					addOrReplaceKeyframe(*pos_track, currentFrame, pos);
+					std::variant<float, int, Vec2, Vec3, Quat> pos_var = pos;
+					if (shouldAddKeyframe(*pos_track, currentFrame, pos_var)) {
+						addOrReplaceKeyframe(*pos_track, currentFrame, pos_var);
+					}
 
 					// rotation track (Quat)
 					Track* rot_track = findOrCreateEntityTrack(e, Track::ValueType::Quat, "Rotation", world);
 					Quat rot = world.getRotation(e);
-					addOrReplaceKeyframe(*rot_track, currentFrame, rot);
+					std::variant<float, int, Vec2, Vec3, Quat> rot_var = rot;
+					if (shouldAddKeyframe(*rot_track, currentFrame, rot_var)) {
+						addOrReplaceKeyframe(*rot_track, currentFrame, rot_var);
+					}
 				}
 			}
 
