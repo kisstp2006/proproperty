@@ -7,6 +7,7 @@
 #include <string>
 #include <variant>
 #include <vector>
+#include <algorithm>
 
 using namespace Lumix;
 
@@ -30,8 +31,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 		, dragging_timeline(false)
 		, hovering_keyframe(false)
 		, editor(editor)
-		, tracks{Track{"Object 1_Rotation", 1, {{10, Vec3(1, 2, 3)}, {20, Vec3(4, 5, 6)}}, Track::ValueType::Vec3},
-			  Track{"Object 1_Transform", 1, {{10, Quat(1, 0, 0, 0)}, {20, Quat(0, 1, 0, 0)}}, Track::ValueType::Quat}}
+		, tracks{}
+		, recording(false)
 	{
 	}
 
@@ -84,11 +85,57 @@ struct EditorPlugin : StudioApp::GUIPlugin
 
 	WorldEditor& editor;
 
+	// recording state
+	bool recording;
+
 	// UI színek és méretek
 	static constexpr float TRACK_HEIGHT = 40.0f;		   
 	static constexpr float KEYFRAME_RADIUS = 6.0f;		   
 	static constexpr float TIMELINE_HEADER_HEIGHT = 30.0f; 
 	static constexpr float TRACK_LABELS_WIDTH = 150.0f;	   
+
+	// helper: find track matching entity id + type, optionally create
+	Track* findOrCreateEntityTrack(const EntityRef entity, Track::ValueType type, const char* suffix, World& world)
+	{
+		const int eid = entity.index;
+		for (Track& t : tracks)
+		{
+			if (t.id == eid && t.type == type) return &t;
+		}
+
+		// create
+		Track new_t;
+		const char* name = world.getEntityName(entity);
+		if (name && name[0] != '\0')
+		{
+			new_t.name = std::string(name) + "_" + suffix;
+		}
+		else
+		{
+			char buf[64];
+			sprintf_s(buf, "Entity_%d_%s", eid, suffix);
+			new_t.name = buf;
+		}
+		new_t.id = eid;
+		new_t.type = type;
+		tracks.push_back(static_cast<Track&&>(new_t));
+		return &tracks.back();
+	}
+
+	// helper: add/replace keyframe in track at frame
+	void addOrReplaceKeyframe(Track& track, int frame, const std::variant<float, int, Vec2, Vec3, Quat>& value)
+	{
+		auto it = std::find_if(track.keyframes.begin(), track.keyframes.end(), [&](const Keyframe& k) { return k.frame == frame; });
+		if (it != track.keyframes.end())
+		{
+			it->value = value;
+		}
+		else
+		{
+			track.keyframes.push_back(Keyframe{frame, value});
+			std::sort(track.keyframes.begin(), track.keyframes.end(), [](const Keyframe& a, const Keyframe& b){ return a.frame < b.frame; });
+		}
+	}
 
 	void onGUI() override
 	{
@@ -125,8 +172,8 @@ struct EditorPlugin : StudioApp::GUIPlugin
 		}
 
 		const char* entity_name = "No entity selected";
-		// fixed: previous check was invalid; use empty()
-		if (!ents.end() == 0)
+		// fixed entity selection check
+		if (ents.length() > 0)
 		{
 			entity_name = world.getEntityName(ents[0]);
 		}
@@ -359,7 +406,7 @@ struct EditorPlugin : StudioApp::GUIPlugin
 
 						if (ImGui::IsMouseHoveringRect(kf_rect.Min, kf_rect.Max))
 						{
-							is_hovered = true;
+						 is_hovered = true;
 							hovering_keyframe = true;
 
 							if (ImGui::IsMouseClicked(0))
@@ -505,6 +552,25 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			}
 			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop");
 
+			// Record toggle button
+			ImGui::SameLine();
+			// red when recording
+			if (recording) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.15f, 0.15f, 1.0f));
+			else ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
+
+			if (ImGui::Button("●##record", ImVec2(button_width, 0)))
+			{
+				recording = !recording;
+				if (recording)
+				{
+					// stop playback while recording
+					playing = false;
+				}
+			}
+			ImGui::PopStyleColor();
+
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Record transforms (toggle)");
+
 			// Frame info
 			ImGui::SameLine();
 			ImGui::SetNextItemWidth(80);
@@ -518,6 +584,24 @@ struct EditorPlugin : StudioApp::GUIPlugin
 			ImGui::SetNextItemWidth(60);
 			ImGui::InputInt("FPS##speed", &play_speed);
 			play_speed = Lumix::clamp(play_speed, 1, 120);
+
+			// If recording, sample current transforms for selected entities and add keyframes
+			if (recording && ents.length() > 0)
+			{
+				for (EntityRef e : ents)
+				{
+					// position track (Vec3)
+					Track* pos_track = findOrCreateEntityTrack(e, Track::ValueType::Vec3, "Position", world);
+					DVec3 pos_d = world.getPosition(e);
+					Vec3 pos = Vec3((float)pos_d.x, (float)pos_d.y, (float)pos_d.z);
+					addOrReplaceKeyframe(*pos_track, currentFrame, pos);
+
+					// rotation track (Quat)
+					Track* rot_track = findOrCreateEntityTrack(e, Track::ValueType::Quat, "Rotation", world);
+					Quat rot = world.getRotation(e);
+					addOrReplaceKeyframe(*rot_track, currentFrame, rot);
+				}
+			}
 
 			// Splitter 
 			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.5f, 0.5f, 0.3f));
